@@ -2,12 +2,12 @@ name: Watch ticket pages
 
 on:
   schedule:
-    # Every 20 minutes, deliberately NOT on :00/:20/:40. Scheduled runs are
-    # best-effort and GitHub delays or outright drops them under load -- and
-    # load spikes on round-number minutes, because that is what everyone's
-    # cron says. Odd offsets get picked up noticeably more reliably. Treat
-    # this as "roughly every 20 minutes" either way.
-    - cron: "7,27,47 * * * *"
+    # Hourly, deliberately not ON the hour. Scheduled runs are best-effort:
+    # GitHub delays or silently drops them under load, load spikes on
+    # round-number minutes, and high-frequency crons are the first to get
+    # deprioritised -- which is why the every-20-minutes schedule this
+    # replaced never fired once. Treat it as "roughly hourly" regardless.
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 # Needed so the job can commit the new state files back to the repo. Commits
