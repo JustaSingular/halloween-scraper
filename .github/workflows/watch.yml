@@ -1,4 +1,4 @@
-name: Watch ZEN Circus tickets
+name: Watch ticket pages
 
 on:
   schedule:
@@ -8,7 +8,7 @@ on:
     - cron: "*/20 * * * *"
   workflow_dispatch:
 
-# Needed so the job can commit the new state.json back to the repo. Commits
+# Needed so the job can commit the new state files back to the repo. Commits
 # made with GITHUB_TOKEN do not retrigger workflows, so this cannot loop.
 permissions:
   contents: write
@@ -20,7 +20,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -32,25 +32,45 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Check the event page
+      # The Wicked Jab page is a Next.js app whose ticket tiers only exist
+      # after client-side rendering, so that source genuinely needs a browser.
+      # Caching the download keeps most runs off the ~40s install.
+      - name: Cache Chromium
+        id: browser-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Chromium
+        if: steps.browser-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install --with-deps chromium
+
+      # A cached browser skips the step above, which is also what installs the
+      # shared libraries Chromium needs, so put those back on cache hits.
+      - name: Install browser system deps
+        if: steps.browser-cache.outputs.cache-hit == 'true'
+        run: python -m playwright install-deps chromium
+
+      - name: Check the ticket pages
         env:
           PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
         run: python app.py --once
 
       - name: Commit the new state
         run: |
-          # state.json holds no timestamp, so it only differs when the ticket
-          # page actually changed -- which makes this file's git history a
+          # The state files hold no timestamp, so they only differ when a
+          # ticket page actually changed -- which makes their git history a
           # readable log of every tier that appeared or sold out.
           #
           # The heartbeat is a once-a-month commit that exists purely to keep
           # the repo active: GitHub disables scheduled workflows after 60 days
-          # without activity, and this event is over a year out.
+          # without activity, and these events are months out.
           date -u +%Y-%m > .github/heartbeat
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state.json .github/heartbeat
+          git add state .github/heartbeat
 
           if git diff --cached --quiet; then
             echo "No change."

@@ -1,34 +1,40 @@
-"""Watch an Island eTickets event and push to Peter's phone when it changes.
+"""Watch ticket pages and push to Peter's phone when they change.
 
-Aimed at THE ZEN CIRCUS (ZEN Halloween), 31 Oct 2026, whose only tier is
-"PRE SALE TICKETS -- $150.00 TTD Sold Out". The point is to catch the moment a
-second tier appears, or that first one comes off Sold Out.
+Two events, two very different sites:
 
-Two things make this cheap to poll:
+  zen        THE ZEN CIRCUS (ZEN Halloween), 31 Oct 2026, on islandetickets.
+             Server-rendered. The event page ships an EMPTY
+             <div class="tickets-container"> and pulls the tiers in afterwards
+             from a fragment endpoint, so hitting that endpoint directly gets
+             the real data with no browser at all.
 
-  * The event page ships an EMPTY <div class="tickets-container">. Every tier,
-    price and sold-out badge is pulled in afterwards from a separate fragment
-    endpoint (see TICKETS_URL). Hitting that directly means no browser, no JS.
-  * That fragment is byte-identical between requests -- no CSRF token, no
-    nonce, no timestamp -- so anything that differs is a real change.
+  wickedjab  Wicked Jab -- Bad Beez, 8 Nov 2026, on Jouvert Jumbeez.
+             A Next.js app backed by Firebase. NOTHING about the tickets is in
+             the HTML -- the server sends only title/date/venue and the tiers
+             arrive client-side after the app authenticates itself. Its
+             /api/events/<id> answers 401 and Firestore answers
+             PERMISSION_DENIED to anonymous requests, so this one genuinely
+             needs a browser. Playwright renders the page exactly as a visitor
+             would and we read the result.
 
-Even so this compares PARSED tiers rather than a hash of the markup, because a
-hash can tell you something moved but not what, and the notification has to be
-readable off a lock screen.
+The point of the wickedjab watch is MALE tickets: every male tier is currently
+sold out, so `male_became_available` is the thing worth waking up for and it
+gets its own headline.
 
 This runs in two places and has to behave in both:
 
   * Locally, `py app.py` loops forever and pushes through the notify skill.
   * In GitHub Actions, `py app.py --once` runs on a cron and pushes through
-    PUSH_TOKEN (a repo secret). state.json is committed back to the repo, so
-    the git history of that one file IS the history of the ticket page.
+    PUSH_TOKEN (a repo secret). state/*.json is committed back to the repo, so
+    the git history of those files IS the history of the ticket pages.
 
 Usage:
-    py app.py                  # check now, then every 20 minutes
-    py app.py --once           # single check (for CI / Task Scheduler)
-    py app.py --once --no-push # ...without sending anything to the phone
-    py app.py --reset          # forget the baseline and start over
-    py app.py --test-notify    # prove the push channel still works
+    py app.py                        # check both, then every 20 minutes
+    py app.py --once                 # single check (for CI)
+    py app.py --once --source zen    # just one source
+    py app.py --once --no-push       # ...without sending anything to the phone
+    py app.py --reset                # forget the baselines and start over
+    py app.py --test-notify          # prove the push channel still works
 """
 
 from __future__ import annotations
@@ -47,17 +53,8 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
-EVENT_ID = "280566"
-EVENT_SLUG = "TheZENCircus"
-
-EVENT_URL = f"https://islandetickets.com/event/{EVENT_SLUG}"
-TICKETS_URL = (
-    "https://islandetickets.com/event_manager/public_events"
-    f"/html_tickets/{EVENT_ID}/"
-)
-
 HERE = Path(__file__).resolve().parent
-STATE_FILE = HERE / "state.json"
+STATE_DIR = HERE / "state"
 LOG_FILE = HERE / "watch.log"
 
 # Locally the push sender is reused from the notify skill rather than
@@ -73,6 +70,11 @@ TIMEOUT = 30
 
 # A single 502 at 3am is not worth a buzz; an hour of them is.
 FAILURES_BEFORE_ALERT = 3
+
+# "Female" must not count as male. There is no word boundary between the "e"
+# and the "m" of "Female", so \bmale\b matches "Male Early Bird" and skips
+# "Female Early Bird" -- which is the entire point of this watch.
+MALE_RE = re.compile(r"\bmale\b", re.IGNORECASE)
 
 SESSION = requests.Session()
 
@@ -159,17 +161,25 @@ def squash(text):
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def fetch(session, url):
-    response = session.get(url, headers=HEADERS, timeout=TIMEOUT)
+def fetch(url):
+    response = SESSION.get(url, headers=HEADERS, timeout=TIMEOUT)
     response.raise_for_status()
     return response.text
 
 
 # --------------------------------------------------------------------------
-# scraping
+# source 1: islandetickets (server-rendered, no browser needed)
 # --------------------------------------------------------------------------
 
-def parse_tiers(html):
+ZEN_ID = "280566"
+ZEN_URL = "https://islandetickets.com/event/TheZENCircus"
+ZEN_TICKETS_URL = (
+    "https://islandetickets.com/event_manager/public_events"
+    f"/html_tickets/{ZEN_ID}/"
+)
+
+
+def parse_zen_tiers(html):
     """Pull the ticket tiers out of the fragment.
 
     Each tier is <li class="row ... price-holder price-52525"> holding a
@@ -214,7 +224,7 @@ def parse_tiers(html):
     return tiers
 
 
-def parse_event(html):
+def parse_zen_event(html):
     """Title, organizer and the date/time/venue lines from the page header."""
     soup = BeautifulSoup(html, "html.parser")
     header = soup.select_one(".event-header")
@@ -238,14 +248,111 @@ def parse_event(html):
     }
 
 
-def snapshot(session):
-    # Deliberately no timestamp in here. state.json is committed by CI, and a
-    # "last checked" field would make every single run a commit; without one,
-    # `git diff --quiet state.json` means exactly "the page changed".
+def snapshot_zen():
+    # Deliberately no timestamp in here. The state files are committed by CI,
+    # and a "last checked" field would make every single run a commit; without
+    # one, `git diff --quiet state/` means exactly "a page changed".
     return {
-        "event": parse_event(fetch(session, EVENT_URL)),
-        "tiers": parse_tiers(fetch(session, TICKETS_URL)),
+        "event": parse_zen_event(fetch(ZEN_URL)),
+        "tiers": parse_zen_tiers(fetch(ZEN_TICKETS_URL)),
     }
+
+
+# --------------------------------------------------------------------------
+# source 2: Jouvert Jumbeez (client-rendered, needs a real browser)
+# --------------------------------------------------------------------------
+
+JUMBEEZ_URL = "https://tickets.jouvertjumbeez.com/events/HvYHkQH1HbIYnr5Wp2ag"
+
+# Prices render as "TTD 350.00". This doubles as the anchor for finding the
+# ticket cards at all.
+JUMBEEZ_PRICE_RE = re.compile(r"\bTTD\s*([\d,]+(?:\.\d{2})?)")
+
+
+def parse_jumbeez_tiers(html):
+    """Read the ticket cards out of the RENDERED page.
+
+    The markup is Tailwind, so every class name here
+    (group/relative/rounded-sm/...) is a build artefact that can churn on any
+    deploy. Rather than depend on that, this finds each price and walks up to
+    the largest ancestor still describing exactly ONE ticket -- the card
+    boundary is defined by shape, which survives a restyle.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    tiers = {}
+
+    for node in soup.find_all(string=JUMBEEZ_PRICE_RE):
+        card = node.parent
+        while card is not None and card.parent is not None:
+            parent_text = card.parent.get_text(" ", strip=True)
+            if len(JUMBEEZ_PRICE_RE.findall(parent_text)) != 1:
+                break
+            card = card.parent
+
+        text = squash(card.get_text(" ", strip=True))
+        match = JUMBEEZ_PRICE_RE.search(text)
+        if not match:
+            continue
+
+        name = squash(text[: match.start()])
+        if not name:
+            continue
+
+        sold_out_now = "sold out" in text.lower()
+        # Rebuilt rather than sliced so the quantity stepper ("Quantity 0")
+        # never lands in the detail and masquerades as a change.
+        detail = f"TTD {match.group(1)}" + (" Sold Out" if sold_out_now else "")
+
+        # Keyed by name: these cards carry no stable id in the DOM, and the
+        # names are what you would actually recognise in a notification.
+        tiers[name] = {
+            "name": name,
+            "detail": detail,
+            "notes": [],
+            "private": False,
+        }
+
+    return tiers
+
+
+def snapshot_jumbeez():
+    # Imported lazily so `--source zen` still runs on a machine with no
+    # browser installed.
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as driver:
+        browser = driver.chromium.launch()
+        try:
+            page = browser.new_page(user_agent=HEADERS["User-Agent"])
+            # NOT wait_until="networkidle": Firestore holds a live listener
+            # open, so the network never goes idle and that wait always times
+            # out. Waiting for a price to appear is the real readiness signal.
+            page.goto(JUMBEEZ_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_selector("text=TTD", timeout=60000)
+            page.wait_for_timeout(1500)
+            html = page.content()
+            title = squash(page.title())
+        finally:
+            browser.close()
+
+    # Only the title is tracked alongside the tiers. The date/venue block is
+    # duplicated across responsive variants of the layout, so diffing it
+    # produces noise rather than news.
+    return {"event": {"title": title}, "tiers": parse_jumbeez_tiers(html)}
+
+
+SOURCES = {
+    "zen": {
+        "label": "ZEN Circus",
+        "url": ZEN_URL,
+        "snapshot": snapshot_zen,
+    },
+    "wickedjab": {
+        "label": "Wicked Jab",
+        "url": JUMBEEZ_URL,
+        "snapshot": snapshot_jumbeez,
+    },
+}
 
 
 # --------------------------------------------------------------------------
@@ -265,6 +372,13 @@ def describe(tier):
 
 def sold_out(tier):
     return "sold out" in (tier.get("detail") or "").lower()
+
+
+def available_male_tiers(tiers):
+    return {
+        key for key, tier in (tiers or {}).items()
+        if MALE_RE.search(tier.get("name") or "") and not sold_out(tier)
+    }
 
 
 def diff(old, new):
@@ -306,19 +420,24 @@ def diff(old, new):
     return changes
 
 
-def headline(old, new):
+def headline(label, old, new):
     """Title for the lock screen -- lead with the thing worth waking up for."""
     old_tiers = old.get("tiers") or {}
     new_tiers = new.get("tiers") or {}
 
+    # The whole reason the Wicked Jab watch exists.
+    new_males = available_male_tiers(new_tiers) - available_male_tiers(old_tiers)
+    if new_males:
+        return f"MALE TICKETS: {', '.join(sorted(new_males))}"
+
     if set(new_tiers) - set(old_tiers):
-        return "New ticket tier"
+        return f"{label}: new ticket tier"
 
     for key in set(old_tiers) & set(new_tiers):
         if sold_out(old_tiers[key]) and not sold_out(new_tiers[key]):
-            return "Tickets on sale"
+            return f"{label}: tickets on sale"
 
-    return "ZEN Circus page changed"
+    return f"{label}: page changed"
 
 
 def summary(state):
@@ -332,18 +451,24 @@ def summary(state):
 # state
 # --------------------------------------------------------------------------
 
-def load_state():
-    if not STATE_FILE.exists():
+def state_path(key):
+    return STATE_DIR / f"{key}.json"
+
+
+def load_state(key):
+    path = state_path(key)
+    if not path.exists():
         return None
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        log(f"state file unreadable ({exc}); treating this run as a new baseline")
+        log(f"[{key}] state file unreadable ({exc}); re-baselining")
         return None
 
 
-def save_state(state):
-    STATE_FILE.write_text(
+def save_state(key, state):
+    STATE_DIR.mkdir(exist_ok=True)
+    state_path(key).write_text(
         json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
@@ -352,108 +477,119 @@ def save_state(state):
 # the check
 # --------------------------------------------------------------------------
 
-def check(session, allow_push=True):
-    """One poll. True if a change was found and reported."""
-    current = snapshot(session)
+def check_source(key, allow_push=True):
+    """One poll of one source. True if a change was found and reported."""
+    source = SOURCES[key]
+    current = source["snapshot"]()
 
-    if not current["tiers"]:
-        # Not fatal on its own: an organizer can pull every tier down between
-        # sales. Worth saying out loud rather than silently comparing {} to {}.
-        log("warning: the fragment listed no tiers at all")
+    if not current.get("tiers"):
+        # A page that renders no tiers at all is far more likely to be a
+        # failed render or a site outage than an organizer deleting every
+        # tier. Raising means it counts as a failure instead of wiping the
+        # baseline and reporting a bogus "TIER REMOVED" for everything.
+        raise RuntimeError("no tiers found on the page")
 
-    previous = load_state()
+    previous = load_state(key)
     if previous is None:
-        save_state(current)
-        log(f"baseline saved -- {summary(current)}")
+        save_state(key, current)
+        log(f"[{key}] baseline saved -- {summary(current)}")
         return False
 
     changes = diff(previous, current)
-    save_state(current)
+    save_state(key, current)
 
     if not changes:
-        log(f"no change ({len(current['tiers'])} tier(s))")
+        log(f"[{key}] no change ({len(current['tiers'])} tier(s))")
         return False
 
-    log("CHANGE DETECTED:\n  " + "\n  ".join(changes))
+    log(f"[{key}] CHANGE DETECTED:\n  " + "\n  ".join(changes))
 
     body = " / ".join(changes)
     if len(body) > 300:
         body = body[:297] + "..."
-    push(headline(previous, current), f"{body} -- {EVENT_URL}", enabled=allow_push)
+    push(
+        headline(source["label"], previous, current),
+        f"{body} -- {source['url']}",
+        enabled=allow_push,
+    )
     return True
 
 
-def watch(interval_seconds, allow_push=True):
-    log(f"watching {EVENT_URL} every {interval_seconds // 60} min (Ctrl+C to stop)")
-    failures = 0
-    alerted_about_failures = False
+def check_all(keys, allow_push=True, failures=None):
+    """Poll every source. One source failing must not stop the others."""
+    failures = {} if failures is None else failures
 
-    while True:
+    for key in keys:
         try:
-            check(SESSION, allow_push=allow_push)
-            if failures and alerted_about_failures:
+            check_source(key, allow_push=allow_push)
+            if failures.get(key, 0) >= FAILURES_BEFORE_ALERT:
                 push(
-                    "Ticket watch recovered",
-                    f"Back in contact with islandetickets.com after {failures} "
-                    "failed checks.",
+                    f"{SOURCES[key]['label']} watch recovered",
+                    f"Back in contact after {failures[key]} failed checks.",
                     enabled=allow_push,
                 )
-            failures = 0
-            alerted_about_failures = False
-        except KeyboardInterrupt:
-            raise
+            failures[key] = 0
         except Exception as exc:
-            failures += 1
-            log(f"check failed ({failures}): {exc}")
-            if failures >= FAILURES_BEFORE_ALERT and not alerted_about_failures:
+            failures[key] = failures.get(key, 0) + 1
+            log(f"[{key}] check failed ({failures[key]}): {exc}")
+            if failures[key] == FAILURES_BEFORE_ALERT:
                 push(
-                    "Ticket watch is blind",
-                    f"{failures} failed checks in a row on the ZEN Circus page. "
-                    f"Last error: {exc}",
+                    f"{SOURCES[key]['label']} watch is blind",
+                    f"{failures[key]} failed checks in a row. Last error: {exc}",
                     enabled=allow_push,
                 )
-                alerted_about_failures = True
 
+    return failures
+
+
+def watch(keys, interval_seconds, allow_push=True):
+    log(f"watching {', '.join(keys)} every {interval_seconds // 60} min "
+        "(Ctrl+C to stop)")
+    failures = {}
+    while True:
+        failures = check_all(keys, allow_push=allow_push, failures=failures)
         # A little jitter so the requests do not land on a metronome.
         time.sleep(interval_seconds + random.randint(0, 60))
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Watch the ZEN Circus ticket page for changes.",
+        description="Watch ticket pages for new tiers and price changes.",
     )
     parser.add_argument("--once", action="store_true",
-                        help="check once and exit (for Task Scheduler)")
+                        help="check once and exit (for CI)")
+    parser.add_argument("--source", choices=sorted(SOURCES), action="append",
+                        help="only check this source (repeatable)")
     parser.add_argument("--interval", type=int, default=20,
                         help="minutes between checks (default: 20)")
     parser.add_argument("--no-push", action="store_true",
                         help="log changes but send nothing to the phone")
     parser.add_argument("--reset", action="store_true",
-                        help="delete the saved baseline and re-seed it")
+                        help="delete the saved baselines and re-seed them")
     parser.add_argument("--test-notify", action="store_true",
                         help="send one test push and exit")
     args = parser.parse_args()
 
     if args.test_notify:
-        push("Ticket watch test", f"Watching {EVENT_SLUG} for new tiers.")
+        push("Ticket watch test", "Watching ZEN Circus and Wicked Jab.")
         return 0
 
-    if args.reset and STATE_FILE.exists():
-        STATE_FILE.unlink()
-        log("baseline cleared")
+    keys = args.source or sorted(SOURCES)
+
+    if args.reset:
+        for key in keys:
+            if state_path(key).exists():
+                state_path(key).unlink()
+                log(f"[{key}] baseline cleared")
 
     allow_push = not args.no_push
 
     if args.once:
-        try:
-            check(SESSION, allow_push=allow_push)
-        except Exception as exc:
-            log(f"check failed: {exc}")
-            return 1
-        return 0
+        failures = check_all(keys, allow_push=allow_push)
+        return 1 if all(failures.get(k) for k in keys) else 0
 
     try:
-        watch(args.interval * 60, allow_push=allow_push)
+        watch(keys, args.interval * 60, allow_push=allow_push)
     except KeyboardInterrupt:
         log("stopped")
     return 0

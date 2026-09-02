@@ -1,0 +1,31 @@
+{
+  "event": {
+    "title": "Wicked Jab — Jouvert Jumbeez"
+  },
+  "tiers": {
+    "Female Special": {
+      "name": "Female Special",
+      "detail": "TTD 250.00 Sold Out",
+      "notes": [],
+      "private": false
+    },
+    "Female Early Bird": {
+      "name": "Female Early Bird",
+      "detail": "TTD 300.00 Sold Out",
+      "notes": [],
+      "private": false
+    },
+    "Male Early Bird": {
+      "name": "Male Early Bird",
+      "detail": "TTD 350.00 Sold Out",
+      "notes": [],
+      "private": false
+    },
+    "Female Tier 1": {
+      "name": "Female Tier 1",
+      "detail": "TTD 350.00",
+      "notes": [],
+      "private": false
+    }
+  }
+}
