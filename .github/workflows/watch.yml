@@ -2,10 +2,12 @@ name: Watch ticket pages
 
 on:
   schedule:
-    # Every 20 minutes. GitHub treats scheduled runs as best-effort and will
-    # skip or delay them when the platform is busy, so treat this as "roughly
-    # every 20 minutes" rather than a guarantee.
-    - cron: "*/20 * * * *"
+    # Every 20 minutes, deliberately NOT on :00/:20/:40. Scheduled runs are
+    # best-effort and GitHub delays or outright drops them under load -- and
+    # load spikes on round-number minutes, because that is what everyone's
+    # cron says. Odd offsets get picked up noticeably more reliably. Treat
+    # this as "roughly every 20 minutes" either way.
+    - cron: "7,27,47 * * * *"
   workflow_dispatch:
 
 # Needed so the job can commit the new state files back to the repo. Commits
