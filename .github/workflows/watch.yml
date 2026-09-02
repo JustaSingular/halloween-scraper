@@ -1,0 +1,60 @@
+name: Watch ZEN Circus tickets
+
+on:
+  schedule:
+    # Every 20 minutes. GitHub treats scheduled runs as best-effort and will
+    # skip or delay them when the platform is busy, so treat this as "roughly
+    # every 20 minutes" rather than a guarantee.
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+# Needed so the job can commit the new state.json back to the repo. Commits
+# made with GITHUB_TOKEN do not retrigger workflows, so this cannot loop.
+permissions:
+  contents: write
+
+concurrency:
+  group: ticket-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Check the event page
+        env:
+          PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
+        run: python app.py --once
+
+      - name: Commit the new state
+        run: |
+          # state.json holds no timestamp, so it only differs when the ticket
+          # page actually changed -- which makes this file's git history a
+          # readable log of every tier that appeared or sold out.
+          #
+          # The heartbeat is a once-a-month commit that exists purely to keep
+          # the repo active: GitHub disables scheduled workflows after 60 days
+          # without activity, and this event is over a year out.
+          date -u +%Y-%m > .github/heartbeat
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json .github/heartbeat
+
+          if git diff --cached --quiet; then
+            echo "No change."
+          else
+            git commit -m "ticket page changed [skip ci]"
+            git push
+          fi

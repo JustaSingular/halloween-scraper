@@ -1,0 +1,21 @@
+{
+  "event": {
+    "title": "THE ZEN CIRCUS (ZEN Halloween)",
+    "organizer": "by Dj Darian Events",
+    "lines": [
+      "Sat 31st October - Sun 1st November, 2026",
+      "10:00 PM - 5:00 AM",
+      "The World Famous ZEN"
+    ]
+  },
+  "tiers": {
+    "52525": {
+      "name": "PRE SALE TICKETS",
+      "detail": "$150.00 TTD Sold Out",
+      "notes": [
+        "Unisex"
+      ],
+      "private": false
+    }
+  }
+}
