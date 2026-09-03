@@ -26,6 +26,12 @@
       "detail": "TTD 350.00",
       "notes": [],
       "private": false
+    },
+    "Male Tier 1": {
+      "name": "Male Tier 1",
+      "detail": "TTD 400.00",
+      "notes": [],
+      "private": false
     }
   }
 }
