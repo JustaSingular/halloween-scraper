@@ -2,11 +2,12 @@ name: Watch ticket pages
 
 on:
   schedule:
-    # Hourly, deliberately not ON the hour. Scheduled runs are best-effort:
-    # GitHub delays or silently drops them under load, load spikes on
-    # round-number minutes, and high-frequency crons are the first to get
-    # deprioritised -- which is why the every-20-minutes schedule this
-    # replaced never fired once. Treat it as "roughly hourly" regardless.
+    # Backstop only -- do NOT rely on this for timing. GitHub throttles
+    # free-tier scheduled runs hard: asked for hourly, it fired at 2-5 hour
+    # gaps and missed a real ticket drop. The actual clock is now a cron on
+    # the Linux box that POSTs to the workflow_dispatch API every 5 minutes;
+    # API-triggered runs queue at normal priority and fire within seconds.
+    # This schedule stays purely as cover for that box being offline.
     - cron: "17 * * * *"
   workflow_dispatch:
 
