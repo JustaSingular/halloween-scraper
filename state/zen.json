@@ -64,6 +64,14 @@
         "2nd floor stage view. Designated bar. Designated entrance. (Skip the line)"
       ],
       "private": false
+    },
+    "52691": {
+      "name": "FINAL VIP",
+      "detail": "$650.00 TTD 0 1 2 3 4 5 6 7 8 9 10",
+      "notes": [
+        "2nd floor stage view. Designated bar. Designated entrance. (Skip the line)"
+      ],
+      "private": false
     }
   }
 }
