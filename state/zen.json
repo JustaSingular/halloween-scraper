@@ -43,7 +43,15 @@
     },
     "52538": {
       "name": "Tier 3 Tickets",
-      "detail": "$400.00 TTD 0 1 2 3 4 5 6 7 8 9 10",
+      "detail": "$400.00 TTD Sold Out",
+      "notes": [
+        "Unisex"
+      ],
+      "private": false
+    },
+    "52539": {
+      "name": "Tier 4 Tickets",
+      "detail": "$450.00 TTD 0 1 2 3 4 5 6 7 8 9 10",
       "notes": [
         "Unisex"
       ],
